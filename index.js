@@ -1,28 +1,59 @@
 const { default: Axios } = require("axios");
 const FormData = require("form-data");
 
-async function buscarCarrera(fecha = "2020-10-11", carrera = 1) {
-  console.log(`Consultando carrera #${carrera}`);
-  const result = await Axios.get(
-    `https://info.jockeypronosticos.com/retrojp.php?fch=${fecha}&ord=${carrera}`
-  );
-  const PPreg = /PP (?<numero>\d{1,2})/g;
-  const nombreReg = /(?<nombre>[\wáéíóúÁÉÍÓÚ ]+)<\/del>/gmu;
-  const numeros = exe(PPreg, result.data).map((reg) => reg.groups.numero);
-  const nombres = exe(nombreReg, result.data).map((reg) =>
-    reg.groups.nombre.toUpperCase()
-  );
-  let carreraData = [];
-  if (numeros.length > 0 && numeros.length != nombres.length) return [];
-  for (let i = 0; i < numeros.length; i++) {
-    const num = numeros[i];
-    const nom = nombres[i];
-    carreraData.push({
-      Numero: num,
-      Nombre: nom,
+function buscarCarrera(id) {
+  return new Promise((resolve, reject) => {
+    const ganchoInicio = '<h1 class="codigo_l1">';
+    result = Axios.get(
+      `http://elgrandatero.net.ve/retrospectos-hipicos-para-la-rinconada-y-valencia.php?recordID=${id}`
+    ).then((result) => {
+      /** @type {String} */
+      const src = result.data;
+      const a = src.indexOf(ganchoInicio);
+      const b = src.indexOf("INFORMACION PARA HOY", a);
+      let srcData = src.substring(a, b);
+
+      const primeraFila = srcData.indexOf('<tr class="mensaje">');
+      srcData = srcData.substr(primeraFila);
+
+      const numCarreras = exe(/<tr class="mensaje">/g, srcData);
+      let carreras = [];
+      console.log("numCarreras :>> ", numCarreras.length);
+      for (let i = 1; i < numCarreras.length; i++) {
+        console.log(i - 1, i);
+        const fila = numCarreras[i - 1];
+        const a = fila.index;
+        const b = numCarreras[i].index;
+        const carreraSrc = srcData.substring(a, b);
+        carreras.push(procesarCarrera(carreraSrc));
+      }
+      const index = numCarreras[numCarreras.length - 1].index;
+      const carreraSrc = srcData.substring(index);
+      carreras.push(procesarCarrera(carreraSrc));
+      resolve(carreras);
     });
+  });
+}
+
+function procesarCarrera(src = "") {
+  let ejemplares = [];
+  const tr = exe(/<tr>/g, src).map((e) => e.index);
+  const trEnd = exe(/<\/tr>/g, src)
+    .map((e) => e.index)
+    .slice(1);
+  for (let i = 0; i < tr.length; i++) {
+    const a = tr[i];
+    const b = trEnd[i];
+    const text = src.substring(a, b);
+    const reg = exe(
+      /<th bgcolor="#5E0000" class="pp">(?<Numero>\d{1,2})<\/th>\s<th bgcolor="#CCCCCC" class="ganadores">(?<Nombre>[\wñÑ ]+)<\/th>/g,
+      text
+    );
+    if (reg.length > 0) {
+      ejemplares.push(reg[0].groups);
+    }
   }
-  return carreraData;
+  return ejemplares;
 }
 
 /**
@@ -30,7 +61,7 @@ async function buscarCarrera(fecha = "2020-10-11", carrera = 1) {
  * @param {*} str
  * @return {RegExpExecArray[]}
  */
-function exe(regex, str) {
+function exe(regex, str, one = false) {
   let m;
   let result = [];
   while ((m = regex.exec(str)) !== null) {
@@ -43,51 +74,21 @@ function exe(regex, str) {
 const express = require("express");
 const app = express();
 
-var logData = [];
-function log(...str) {
-  logData.unshift(str.join(" "));
-}
-function printLogs() {
-  let str = "<ul>";
-  str += logData
-    .map((item) => {
-      return `<li>${item}</li>`;
-    })
-    .join("");
-  str += "</ul>";
-  return str;
-}
-var cargando = {};
-
 app.get("/", async function (req, res) {
+  const id = req.query.id;
   const fecha = req.query.fecha;
-  if (cargando[fecha]) return res.send(printLogs());
-  else {
-    cargando[fecha] = req.ip;
-    log(
-      `Enhorabuena ${req.ip}, eres el primero en solicitar carreras para el dia ${fecha}, espera unos minutos mientras procesamos la solicitud`
-    );
-    res.send(printLogs());
-  }
-  cargando[fecha] = req.ip;
-  log(req.ip, "solicita cargar carreras para", fecha);
-  let numCarrera = 1;
-  let carrera = await buscarCarrera(fecha, numCarrera).catch((error) => {
-    log(
-      "Oops.. ocurrio un error mientras se obtenian las carreras de la pagina.."
-    );
+  const hipodromo = req.query.hipodromo || "RINCONADA";
+  buscarCarrera(id).then((result) => {
+    res.json(result);
+    guardar(result, fecha, hipodromo);
   });
-  let carreras = [];
-  while (carrera.length > 0) {
-    log(`carrera #${numCarrera}: ${carrera.length} ejemplares`);
-    carreras.push(carrera);
-    carrera = await buscarCarrera(fecha, ++numCarrera);
-  }
-  log("Se ha finalizado de cargar las carreras para el ", fecha);
+});
+
+function guardar(carreras, fecha, hipodromo) {
   const ejemplares = JSON.stringify(carreras);
   const formData = new FormData();
   formData.append("fecha", fecha);
-  formData.append("hipodromo", "RINCONADA");
+  formData.append("hipodromo", hipodromo);
   formData.append("ejemplares", ejemplares);
   Axios.post(
     `http://sistemasrq.com/apps/hipico/carreras/guardar.php`,
@@ -98,13 +99,12 @@ app.get("/", async function (req, res) {
   )
     .then((result) => {
       console.log(result.data);
-      log("Carreras cargadas exitosamente a la nube");
+      console.log("Carreras cargadas exitosamente a la nube");
     })
     .catch((e) => {
-      delete cargando[fecha];
       console.log(e.response);
-      log("Ocurrio un error al cargar las carreras");
+      console.log("Ocurrio un error al cargar las carreras");
     });
-});
+}
 
 app.listen(3000);
